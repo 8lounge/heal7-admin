@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="cache-control" content="no-cache, no-store, must-revalidate">
+    <meta name="expires" content="0">
+    <meta name="build-time" content="2025-07-28-20:00">
+    <meta name="cache-buster" content="redis-optimized-v25">
+    <title>대규모 3D 상태-인지 매트릭스 (v25: Redis 캐싱 최적화)</title>
+    <!-- Tailwind CDN removed to prevent conflicts with Next.js build -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans KR', sans-serif;
+            margin: 0;
+            overflow: hidden;
+            background-color: #0c0a09;
+        }
+        .ui-layer {
+            position: absolute;
+            background-color: rgba(41, 37, 36, 0.8);
+            padding: 1rem;
+            border-radius: 0.5rem;
+            color: #d6d3d1;
+            z-index: 1000;
+            backdrop-filter: blur(4px);
+            pointer-events: auto;
+        }
+        .keyword-label {
+            color: #e5e7eb;
+            font-size: 14px;
+            text-shadow: 0 0 8px #000;
+            transition: opacity 0.3s, font-size 0.3s;
+        }
+        #legend {
+            bottom: 1.5rem;
+            left: 1.5rem;
+            font-size: 0.875rem;
+            pointer-events: none;
+            z-index: 1001;
+        }
+        .legend-item { display: flex; align-items: center; margin-bottom: 0.5rem; }
+        .legend-color { width: 1rem; height: 1rem; border-radius: 50%; margin-right: 0.75rem; border: 1px solid rgba(255,255,255,0.2); }
+        
+        #search-container {
+            top: 1.5rem;
+            right: 1.5rem;
+            display: flex;
+            align-items: center;
+            padding: 0.5rem;
+            z-index: 1001;
+        }
+        #keyword-search { background-color: transparent; border: none; border-bottom: 2px solid #6b7280; color: white; padding: 0.25rem 0.5rem; transition: border-color 0.3s; }
+        #keyword-search:focus { outline: none; border-bottom-color: #f59e0b; }
+        #search-button { background-color: #f59e0b; color: #1c1917; border: none; padding: 0.35rem 0.75rem; border-radius: 0.25rem; margin-left: 0.5rem; cursor: pointer; font-weight: bold; transition: background-color 0.3s; }
+        #search-button:hover { background-color: #fbbf24; }
+
+        #controls-container {
+            top: 1.5rem;
+            left: 1.5rem;
+            width: 200px;
+            z-index: 1001;
+        }
+        .control-group { margin-bottom: 0.75rem; }
+        .control-group:last-child { margin-bottom: 0; }
+        .control-group label { display: block; font-size: 0.875rem; margin-bottom: 0.25rem; }
+        .control-group input[type="range"] { width: 100%; }
+        .control-group button { width: 100%; background-color: #3f3f46; color: white; border: none; padding: 0.5rem; border-radius: 0.25rem; cursor: pointer; transition: background-color 0.3s; }
+        .control-group button:hover { background-color: #52525b; }
+        .zoom-buttons button { flex: 1; }
+        
+        /* 3D 렌더링 컨테이너 스타일 */
+        #container {
+            position: relative;
+            z-index: 1;
+        }
+        
+        /* UI 영역에서 키워드 클릭 차단 */
+        .ui-block-area {
+            position: absolute;
+            pointer-events: none;
+            z-index: 999;
+        }
+    </style>
+</head>
+<body>
+    <div id="legend" class="ui-layer">
+        <h3 class="font-bold mb-2 text-white">상태 색상</h3>
+        <div class="legend-item"><div class="legend-color" style="background-color: #4ade80;"></div>긍정</div>
+        <div class="legend-item"><div class="legend-color" style="background-color: #facc15;"></div>중립</div>
+        <div class="legend-item"><div class="legend-color" style="background-color: #f87171;"></div>부정</div>
+        <div class="legend-item"><div class="legend-color" style="background-color: #6b7280;"></div>비활성</div>
+    </div>
+    <div id="search-container" class="ui-layer">
+        <input type="text" id="keyword-search" placeholder="키워드 검색...">
+        <button id="search-button">검색</button>
+    </div>
+    <div id="controls-container" class="ui-layer">
+        <div class="control-group">
+            <button id="reset-button">초기화</button>
+        </div>
+        <div class="control-group">
+            <label for="speed-slider">회전 속도</label>
+            <input type="range" id="speed-slider" min="0" max="5" step="0.1" value="1.3">
+        </div>
+        <div class="control-group">
+            <label for="text-size-slider">텍스트 크기</label>
+            <input type="range" id="text-size-slider" min="10" max="24" step="1" value="14">
+        </div>
+        <div class="control-group">
+            <div class="flex gap-3 items-center justify-between">
+                <button id="zoom-in-button" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg shadow-md transition-all duration-200 text-center">줌인 (+)</button>
+                <button id="zoom-out-button" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-semibold py-3 px-4 rounded-lg shadow-md transition-all duration-200 text-center">줌아웃 (-)</button>
+            </div>
+        </div>
+    </div>
+    <div id="container"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+        let scene, camera, renderer, labelRenderer, controls, raycaster, group;
+        const nodes = {};
+        const edges = [];
+        const hitboxes = [];
+        const mouse = new THREE.Vector2(-100, -100); // Initialize mouse off-screen
+        let cameraTween, targetTween;
+
+        // --- IMPROVED STATE MANAGEMENT ---
+        let highlightedNode = null; // Node currently under the mouse
+        let isFocused = false;      // Is the camera focused on a node set?
+        let isHovering = false;     // Is the mouse currently over a node?
+        let hasUserInteracted = false; // Has the user moved the mouse for the first time?
+
+        const initialCameraPosition = new THREE.Vector3(0, 0, 150);
+
+        // 실제 키워드 데이터와 종속성을 API에서 가져옴
+        let keywordData = {};
+        let keywords = [];
+        let dependencies = [];
+        let isDataLoaded = false;
+
+        // API에서 키워드와 종속성 데이터 가져오기 (Redis 캐싱 통합 엔드포인트 사용)
+        async function loadKeywordData() {
+            try {
+                console.log('Loading keyword matrix data from Redis-cached API...');
+                
+                // Redis 캐싱된 통합 엔드포인트에서 데이터 가져오기
+                const response = await fetch('/admin-api/keywords/matrix/data');
+                
+                if (!response.ok) {
+                    console.warn('Matrix API failed, falling back to separate endpoints...');
+                    // 폴백: 기존 방식으로 개별 엔드포인트 호출
+                    return await loadKeywordDataFallback();
+                }
+                
+                const matrixData = await response.json();
+                
+                console.log(`Loaded matrix data from cache: ${matrixData.keywords.length} keywords, ${matrixData.dependencies.length} dependencies`);
+                console.log('Cache stats:', matrixData.stats);
+                
+                // 전역 변수에 할당 (백엔드에서 최적화된 데이터 직접 사용)
+                keywords = matrixData.keywords;
+                keywordData = matrixData.keyword_data || {}; // 백엔드에서 이미 처리된 데이터 사용
+                
+                // 백엔드에서 전처리되지 않은 경우에만 처리 (폴백)
+                if (!matrixData.keyword_data) {
+                    const dependenciesData = matrixData.dependencies;
+                    keywordData = {};
+                    const keywordMap = new Map();
+                    
+                    keywords.forEach(keyword => {
+                        keywordMap.set(keyword.id, keyword.text);
+                        keywordData[keyword.text] = [];
+                    });
+                    
+                    dependenciesData.forEach(dep => {
+                        const parentText = keywordMap.get(dep.parent_keyword_id);
+                        const dependentText = keywordMap.get(dep.dependent_keyword_id);
+                        
+                        if (parentText && dependentText) {
+                            keywordData[parentText].push(dependentText);
+                        }
+                    });
+                }
+                
+                isDataLoaded = true;
+                console.log('Keyword matrix data loaded successfully from Redis cache');
+                
+                // 데이터 로드 완료 후 3D 시각화 시작
+                init();
+                animate();
+                
+            } catch (error) {
+                console.error('Failed to load keyword matrix data:', error);
+                // 폴백: 기존 방식으로 개별 엔드포인트 호출
+                return await loadKeywordDataFallback();
+            }
+        }
+
+        // 폴백 함수: 기존 방식의 개별 엔드포인트 호출
+        async function loadKeywordDataFallback() {
+            try {
+                console.log('Loading keyword data from separate endpoints (fallback)...');
+                
+                // 키워드와 종속성 데이터를 병렬로 가져옴
+                const [keywordsResponse, dependenciesResponse] = await Promise.all([
+                    fetch('/admin-api/keywords/all'),
+                    fetch('/admin-api/dependencies/')
+                ]);
+                
+                if (!keywordsResponse.ok || !dependenciesResponse.ok) {
+                    throw new Error('Failed to fetch data from fallback APIs');
+                }
+                
+                keywords = await keywordsResponse.json();
+                const dependenciesData = await dependenciesResponse.json();
+                
+                console.log(`Loaded fallback data: ${keywords.length} keywords and ${dependenciesData.length} dependencies`);
+                
+                // 종속성 데이터를 키워드 매핑 형태로 변환
+                keywordData = {};
+                const keywordMap = {};
+                
+                // 키워드 ID to 텍스트 매핑 생성
+                keywords.forEach(keyword => {
+                    keywordMap[keyword.id] = keyword.text;
+                });
+                
+                // 종속성 데이터를 키워드 매핑으로 변환
+                dependenciesData.forEach(dep => {
+                    const parentText = keywordMap[dep.parent_keyword_id];
+                    const dependentText = keywordMap[dep.dependent_keyword_id];
+                    
+                    if (parentText && dependentText) {
+                        if (!keywordData[parentText]) {
+                            keywordData[parentText] = [];
+                        }
+                        keywordData[parentText].push(dependentText);
+                    }
+                });
+                
+                // 모든 키워드가 키워드 데이터에 포함되도록 보장
+                keywords.forEach(keyword => {
+                    if (!keywordData[keyword.text]) {
+                        keywordData[keyword.text] = [];
+                    }
+                });
+                
+                isDataLoaded = true;
+                console.log('Keyword data loaded successfully (fallback)');
+                
+                // 데이터 로드 완료 후 3D 시각화 시작
+                init();
+                animate();
+                
+            } catch (error) {
+                console.error('Failed to load keyword data (fallback also failed):', error);
+                // 최종 실패 시 빈 데이터로 초기화
+                keywordData = {};
+                keywords = [];
+                isDataLoaded = true;
+                
+                // 에러 시에도 3D 시각화 시작 (빈 데이터로)
+                init();
+                animate();
+            }
+        }
+
+        function getStateColor(state) {
+            if (state > 0.5) return new THREE.Color("#4ade80"); // Positive
+            if (state > -0.2) return new THREE.Color("#facc15"); // Neutral
+            if (state > -1) return new THREE.Color("#f87171"); // Negative
+            return new THREE.Color("#6b7280"); // Inactive
+        }
+
+        // 데이터 로드 후 초기화
+        loadKeywordData();
+
+        function init() {
+            const container = document.getElementById('container');
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera.position.copy(initialCameraPosition);
+            raycaster = new THREE.Raycaster();
+
+            group = new THREE.Group();
+            scene.add(group);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+            
+            labelRenderer = new CSS2DRenderer();
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.domElement.style.position = 'absolute';
+            labelRenderer.domElement.style.top = '0px';
+            labelRenderer.domElement.style.pointerEvents = 'none';
+            container.appendChild(labelRenderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.target.set(0, 0, 0); // 명시적으로 초기 타겟 설정
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.minDistance = 10;
+            controls.maxDistance = 300;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 1.3;
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 2.5);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+
+            createGraph();
+            setupUIAndListeners();
+        }
+
+        function createGraph() {
+            const mainKeywords = Object.keys(keywordData);
+            const allKeywords = new Set();
+            mainKeywords.forEach(key => {
+                allKeywords.add(key);
+                if(keywordData[key]) keywordData[key].forEach(dep => allKeywords.add(dep));
+            });
+
+            const keywordStates = {};
+            allKeywords.forEach(k => keywordStates[k] = (Math.random() * 2 - 1));
+
+            mainKeywords.forEach(mainK => {
+                const deps = keywordData[mainK];
+                if (deps && deps.length > 0) {
+                    const avgState = deps.reduce((acc, depK) => acc + (keywordStates[depK] || 0), 0) / deps.length;
+                    keywordStates[mainK] = avgState;
+                }
+            });
+
+            const sphereRadius = 80;
+            const positions = [];
+            const numPoints = allKeywords.size;
+            for (let i = 0; i < numPoints; i++) {
+                const phi = Math.acos(-1 + (2 * i) / numPoints);
+                const theta = Math.sqrt(numPoints * Math.PI) * phi;
+                positions.push(new THREE.Vector3(
+                    sphereRadius * Math.cos(theta) * Math.sin(phi),
+                    sphereRadius * Math.sin(theta) * Math.sin(phi),
+                    sphereRadius * Math.cos(phi)
+                ));
+            }
+            
+            let i = 0;
+            allKeywords.forEach(keyword => {
+                const isMain = mainKeywords.includes(keyword);
+                const state = keywordStates[keyword];
+                const color = getStateColor(state);
+                
+                const geometry = new THREE.SphereGeometry(isMain ? 0.5 : 0.25, 32, 32);
+                const material = new THREE.MeshPhongMaterial({ color: color, emissive: color.clone().multiplyScalar(0.3), shininess: 80, transparent: true });
+                const node = new THREE.Mesh(geometry, material);
+                node.position.copy(positions[i++]);
+                node.userData = { id: keyword, isNode: true, isMain: isMain, connections: new Set(), waveOffset: Math.random() * Math.PI * 2, originalPosition: node.position.clone(), originalState: state };
+                
+                const labelDiv = document.createElement('div');
+                labelDiv.className = 'keyword-label';
+                labelDiv.textContent = keyword;
+                labelDiv.style.fontWeight = isMain ? 'bold' : 'normal';
+                labelDiv.style.pointerEvents = 'auto'; // 라벨 클릭 활성화
+                labelDiv.style.cursor = 'pointer'; // 마우스 커서 변경
+                labelDiv.addEventListener('click', (e) => {
+                    e.stopPropagation(); // 이벤트 버블링 방지
+                    focusOnSet(node);
+                });
+                
+                const label = new CSS2DObject(labelDiv);
+                label.position.set(0, isMain ? 0.8 : 0.5, 0);
+                node.add(label);
+                node.userData.label = label;
+                
+                nodes[keyword] = node;
+                group.add(node);
+
+                // 히트박스 크기를 키워드 타입에 따라 조정 (겹침 방지)
+                const hitboxRadius = isMain ? 0.8 : 0.5; // 메인 키워드: 0.8, 일반 키워드: 0.5
+                const hitboxGeometry = new THREE.SphereGeometry(hitboxRadius, 8, 8);
+                const hitboxMaterial = new THREE.MeshBasicMaterial({ visible: false });
+                const hitbox = new THREE.Mesh(hitboxGeometry, hitboxMaterial);
+                hitbox.position.copy(node.position);
+                hitbox.userData.visibleNode = node;
+                hitbox.userData.keyword = keyword; // 디버깅용 키워드 정보 추가
+                hitboxes.push(hitbox);
+                group.add(hitbox);
+            });
+
+            let totalConnections = 0;
+            let skippedConnections = 0;
+            
+            mainKeywords.forEach(mainKeyword => {
+                const startNode = nodes[mainKeyword];
+                if (!startNode) {
+                    console.warn(`메인 키워드 노드 없음: ${mainKeyword}`);
+                    return;
+                }
+                if (!keywordData[mainKeyword]) {
+                    console.warn(`키워드 데이터 없음: ${mainKeyword}`);
+                    return;
+                }
+
+                keywordData[mainKeyword].forEach(depKeyword => {
+                    const endNode = nodes[depKeyword];
+                    if (!endNode) {
+                        console.warn(`종속 키워드 노드 없음: ${depKeyword} (메인: ${mainKeyword})`);
+                        skippedConnections++;
+                        return;
+                    }
+                    
+                    const points = [startNode.position, endNode.position];
+                    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                    const material = new THREE.LineBasicMaterial({ color: 0x4b5563, transparent: true, opacity: 0.15 });
+                    const edge = new THREE.Line(geometry, material);
+                    edge.userData = { nodes: [startNode, endNode] };
+                    edges.push(edge);
+                    
+                    group.add(edge);
+                    
+                    startNode.userData.connections.add(endNode);
+                    endNode.userData.connections.add(startNode);
+                    totalConnections++;
+                });
+            });
+            
+            console.log(`연결 생성 완료: 총 ${totalConnections}개 연결, ${skippedConnections}개 스킵`);
+        }
+        
+        function setupUIAndListeners() {
+            // Search
+            document.getElementById('search-button').addEventListener('click', searchKeyword);
+            document.getElementById('keyword-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchKeyword(); });
+            
+            // Controls
+            document.getElementById('reset-button').addEventListener('click', resetCamera);
+            document.getElementById('speed-slider').addEventListener('input', (e) => { controls.autoRotateSpeed = parseFloat(e.target.value); });
+            document.getElementById('text-size-slider').addEventListener('input', (e) => {
+                const newSize = e.target.value + 'px';
+                Object.values(nodes).forEach(node => { node.userData.label.element.style.fontSize = newSize; });
+            });
+            document.getElementById('zoom-in-button').addEventListener('click', () => {
+                const factor = 0.8;
+                camera.position.multiplyScalar(factor);
+                controls.update();
+            });
+            document.getElementById('zoom-out-button').addEventListener('click', () => {
+                const factor = 1.2;
+                camera.position.multiplyScalar(factor);
+                controls.update();
+            });
+
+            // --- REFINED EVENT LISTENERS ---
+            window.addEventListener('resize', onWindowResize, false);
+            // renderer.domElement.addEventListener('mousemove', onMouseMove, false); // 마우스 롤오버 포커싱 비활성화
+            renderer.domElement.addEventListener('click', onCanvasClick, false);
+            renderer.domElement.addEventListener('wheel', onWheel, false); // For focus deactivation
+
+            // Deactivate focus on drag start
+            controls.addEventListener('start', () => {
+                if (cameraTween) cameraTween.kill();
+                if (targetTween) targetTween.kill();
+                controls.enabled = true;
+
+                if (isFocused) {
+                    isFocused = false;
+                    unhighlightAll();
+                    highlightedNode = null;
+                    // Gently reset orbit target so rotation is correct after drag
+                    gsap.to(controls.target, { duration: 0.5, x: 0, y: 0, z: 0, ease: "power2.out" });
+                }
+            });
+        }
+        
+        // --- EVENT HANDLER FUNCTIONS ---
+
+        function onWindowResize() {
+            console.log(`Window resized: ${window.innerWidth}x${window.innerHeight}`);
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+            console.log(`Camera aspect after resize: ${camera.aspect}`);
+        }
+
+        // 마우스 롤오버 포커싱 기능 비활성화 - 클릭으로만 포커싱
+        // function onMouseMove(event) {
+        //     // This flag ensures hover effects only start after the user first moves the mouse.
+        //     if (!hasUserInteracted) {
+        //         hasUserInteracted = true;
+        //     }
+        //     mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        //     mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        // }
+
+        function onCanvasClick(event) {
+            // UI 영역 클릭 차단 - UI 요소들과의 충돌 체크
+            const uiElements = [
+                document.getElementById('controls-container'),
+                document.getElementById('search-container'),
+                document.getElementById('legend')
+            ];
+            
+            // 클릭 위치가 UI 영역에 있는지 확인
+            for (let uiElement of uiElements) {
+                if (uiElement) {
+                    const rect = uiElement.getBoundingClientRect();
+                    if (event.clientX >= rect.left && event.clientX <= rect.right &&
+                        event.clientY >= rect.top && event.clientY <= rect.bottom) {
+                        console.log('UI 영역 클릭 감지 - 키워드 클릭 차단:', uiElement.id);
+                        return; // UI 영역 클릭이므로 키워드 클릭 처리하지 않음
+                    }
+                }
+            }
+            
+            // 클릭 시 마우스 좌표 업데이트
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(hitboxes);
+
+            if (intersects.length > 0) {
+                // 가장 가까운 히트박스 선택 (거리 기준 정렬은 이미 되어 있음)
+                const closestIntersect = intersects[0];
+                const clickedNode = closestIntersect.object.userData.visibleNode;
+                const clickedKeyword = clickedNode.userData.id;
+                
+                // 디버깅: 클릭 정확도 검증
+                console.log(`=== 클릭 디버깅 ===`);
+                console.log(`마우스 좌표: (${mouse.x.toFixed(3)}, ${mouse.y.toFixed(3)})`);
+                console.log(`감지된 히트박스 개수: ${intersects.length}`);
+                console.log(`선택된 키워드: "${clickedKeyword}"`);
+                console.log(`선택된 거리: ${closestIntersect.distance.toFixed(2)}`);
+                
+                // 겹친 키워드가 있는 경우 상위 3개 출력
+                if (intersects.length > 1) {
+                    console.log(`겹친 키워드들 (거리순):`);
+                    intersects.slice(0, 3).forEach((intersect, index) => {
+                        const nodeKeyword = intersect.object.userData.visibleNode.userData.id;
+                        const distance = intersect.distance.toFixed(2);
+                        const isMain = intersect.object.userData.visibleNode.userData.isMain;
+                        console.log(`  ${index + 1}. "${nodeKeyword}" (거리: ${distance}) ${isMain ? '[메인]' : '[일반]'}`);
+                    });
+                    
+                    // 만약 매우 가까운 거리에 여러 키워드가 있다면 경고
+                    const distanceDiff = intersects[1].distance - intersects[0].distance;
+                    if (distanceDiff < 0.1) {
+                        console.warn(`⚠️ 매우 가까운 키워드들이 겹침 (거리 차이: ${distanceDiff.toFixed(3)})`);
+                    }
+                }
+                
+                // Only focus on click
+                focusOnSet(clickedNode);
+            } else {
+                console.log(`빈 공간 클릭 - 히트박스 없음`);
+                // If clicking on empty space while focused, reset the view.
+                if (isFocused) {
+                    resetCamera();
+                }
+            }
+        }
+        
+        function onWheel() {
+            // Allow zoom/pan even when focused. OrbitControls handles the actual zoom.
+        }
+
+        // --- CORE LOGIC FUNCTIONS ---
+
+        function resetCamera() {
+            if (cameraTween) cameraTween.kill();
+            if (targetTween) targetTween.kill();
+
+            isFocused = false;
+            
+            // 지구본 외각에 키워드들이 보이도록 초기 카메라 위치 설정
+            const optimalViewDistance = 150; // 지구본 반지름(80)의 약 1.9배로 조정
+            const adjustedCameraPosition = new THREE.Vector3(0, 0, optimalViewDistance);
+            
+            // Animate camera and target back to the initial "globe view"
+            gsap.to(camera.position, { 
+                duration: 1.2, 
+                x: adjustedCameraPosition.x, y: adjustedCameraPosition.y, z: adjustedCameraPosition.z, 
+                ease: "power3.inOut",
+                onStart: () => { controls.enabled = false; }, // Disable controls during animation
+                onComplete: () => { controls.enabled = true; } // Re-enable after
+            });
+            gsap.to(controls.target, { 
+                duration: 1.2, 
+                x: 0, y: 0, z: 0, 
+                ease: "power3.inOut"
+            });
+
+            if(highlightedNode) {
+                unhighlightAll();
+                highlightedNode = null;
+                isHovering = false;
+            }
+        }
+
+        function searchKeyword() {
+            const searchTerm = document.getElementById('keyword-search').value.trim();
+            if (!searchTerm) return;
+            
+            const foundKey = Object.keys(nodes).find(key => key.toLowerCase().includes(searchTerm.toLowerCase()));
+            const foundNode = foundKey ? nodes[foundKey] : null;
+
+            if (foundNode) {
+                focusOnSet(foundNode);
+            } else {
+                // Shake animation for feedback
+                const searchBox = document.getElementById('search-container');
+                searchBox.animate([
+                    { transform: 'translateX(0px)' }, { transform: 'translateX(-5px)' }, 
+                    { transform: 'translateX(5px)' }, { transform: 'translateX(0px)' }
+                ], { duration: 300, iterations: 2 });
+            }
+        }
+
+        function focusOnSet(centerNode) {
+            if (cameraTween) cameraTween.kill();
+            if (targetTween) targetTween.kill();
+
+            isFocused = true;
+            isHovering = false; // Disable hover state while focused
+            
+            console.log(`Focusing on keyword: ${centerNode.userData.id}, connections: ${centerNode.userData.connections.size}`);
+            
+            if (highlightedNode !== centerNode) {
+                unhighlightAll();
+                highlightedNode = centerNode;
+            }
+            
+            const nodeSet = new Set([centerNode, ...centerNode.userData.connections]);
+            highlightSet(nodeSet);
+
+            // --- 개선된 방사형 레이아웃: 중심 키워드에서 종속 키워드로 직선 연결 ---
+            const layoutCenter = new THREE.Vector3(0, 0, 0); // 새 레이아웃의 중심점
+
+            // 중심 노드를 레이아웃 중심으로 이동
+            gsap.to(centerNode.position, {
+                duration: 1.0,
+                x: layoutCenter.x,
+                y: layoutCenter.y,
+                z: layoutCenter.z,
+                ease: "power2.out",
+                onUpdate: () => {
+                    updateEdgePositions(centerNode);
+                }
+            });
+
+            // 종속 노드들을 방사형으로 배치 (균등한 각도 분산)
+            const dependentNodes = Array.from(nodeSet).filter(node => node !== centerNode);
+            const numDependentNodes = dependentNodes.length;
+            
+            if (numDependentNodes > 0) {
+                // 동적 반지름: 노드 수에 따라 조정하되 겹침 방지를 위해 충분한 간격 확보
+                const baseRadius = 50; // 기본 반지름 증가
+                const radiusIncrement = Math.max(8, numDependentNodes * 1.5); // 노드 수에 따른 반지름 증가
+                const circleRadius = baseRadius + radiusIncrement;
+                
+                // 균등한 각도 간격으로 배치
+                const angleIncrement = (Math.PI * 2) / numDependentNodes;
+                let startAngle = 0; // 시작 각도 (12시 방향)
+                
+                dependentNodes.forEach((node, index) => {
+                    const angle = startAngle + (angleIncrement * index);
+                    const newPosition = new THREE.Vector3(
+                        layoutCenter.x + circleRadius * Math.cos(angle),
+                        layoutCenter.y + circleRadius * Math.sin(angle),
+                        layoutCenter.z // 동일한 Z 레벨 유지
+                    );
+                    
+                    gsap.to(node.position, {
+                        duration: 1.0,
+                        x: newPosition.x,
+                        y: newPosition.y,
+                        z: newPosition.z,
+                        ease: "power2.out",
+                        onUpdate: () => {
+                            updateEdgePositions(node);
+                        }
+                    });
+                });
+                
+                console.log(`방사형 레이아웃: ${numDependentNodes}개 노드를 반지름 ${circleRadius}에 배치`);
+            }
+
+            // 카메라 프레이밍을 위한 바운딩 박스 계산
+            const boundingRadius = numDependentNodes > 0 ? 
+                50 + Math.max(8, numDependentNodes * 1.5) : 30;
+            
+            // 14개 이상 키워드의 경우 통일된 카메라 설정
+            let optimalDistance, cameraDirection;
+            
+            if (numDependentNodes >= 20) {
+                // 20-24개: 줌아웃 버튼 2회 누른 상태 (화면에 모두 표시)
+                optimalDistance = 120; // 줌아웃 2회 효과
+                cameraDirection = new THREE.Vector3(0.1, 0.05, 1).normalize(); // 넓은 시야각
+                console.log(`📺 20-24개 노드 광시야 설정: ${numDependentNodes}개 노드 → 거리 ${optimalDistance}, 광시야 앵글 (0.1, 0.05, 1)`);
+            } else if (numDependentNodes >= 14) {
+                // 14-19개: 줌인 버튼 1회 누른 상태
+                optimalDistance = 85; // 줌인 1회 효과
+                cameraDirection = new THREE.Vector3(0.2, 0.1, 1).normalize(); // 집중 시야각
+                console.log(`🎯 14-19개 노드 집중 설정: ${numDependentNodes}개 노드 → 거리 ${optimalDistance}, 집중 앵글 (0.2, 0.1, 1)`);
+            } else {
+                // 13개 이하: 기존 적응형 로직 유지
+                optimalDistance = 95; // 기본 포커싱 거리
+                cameraDirection = new THREE.Vector3(0.3, 0.15, 1).normalize(); // 기존 앵글
+                
+                if (numDependentNodes >= 10) {
+                    // 10-13개일 때: 기존 방식 유지
+                    const extraDistance = (numDependentNodes - 10) * 6.4; 
+                    optimalDistance = 95 + extraDistance + 23; 
+                    console.log(`📏 10-13개 노드 기본 거리: ${numDependentNodes}개 노드 → ${optimalDistance} 거리`);
+                }
+            }
+            const newCameraPos = layoutCenter.clone().add(cameraDirection.multiplyScalar(optimalDistance));
+
+            console.log(`=== 방사형 포커싱 디버깅 ===`);
+            console.log(`네트워크 크기: ${nodeSet.size}개 (중심: 1, 종속: ${numDependentNodes})`);
+            console.log(`레이아웃 반지름: ${boundingRadius}`);
+            console.log(`최적 카메라 거리: ${optimalDistance}`);
+            console.log(`새 카메라 위치:`, newCameraPos);
+            console.log(`========================`);
+
+            // 카메라 애니메이션
+            cameraTween = gsap.to(camera.position, {
+                duration: 1.5, 
+                x: newCameraPos.x, 
+                y: newCameraPos.y, 
+                z: newCameraPos.z, 
+                ease: "power3.inOut",
+                onStart: () => { controls.enabled = false; },
+                onComplete: () => { controls.enabled = true; }
+            });
+            
+            // 카메라 타겟 애니메이션
+            targetTween = gsap.to(controls.target, {
+                duration: 1.5, 
+                x: layoutCenter.x, 
+                y: layoutCenter.y, 
+                z: layoutCenter.z, 
+                ease: "power3.inOut"
+            });
+        }
+        
+        // 엣지 위치 업데이트 헬퍼 함수
+        function updateEdgePositions(node) {
+            edges.forEach(edge => {
+                if (edge.userData.nodes.includes(node)) {
+                    const start = edge.userData.nodes[0];
+                    const end = edge.userData.nodes[1];
+                    edge.geometry.setFromPoints([start.position, end.position]);
+                }
+            });
+        }
+
+        function checkHighlight() {
+            // This function now only handles hover effects, not focus.
+            // It won't run until the user has moved the mouse, ensuring a stable start.
+            if (isFocused || !hasUserInteracted) return;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(hitboxes);
+
+            const newHighlight = intersects.length > 0 ? intersects[0].object.userData.visibleNode : null;
+
+            if (highlightedNode !== newHighlight) {
+                if (highlightedNode) {
+                    unhighlightAll();
+                }
+                if (newHighlight) {
+                    highlightSet(new Set([newHighlight, ...newHighlight.userData.connections]));
+                }
+                highlightedNode = newHighlight;
+            }
+            
+            // Update hover state, which controls rotation in the animate loop.
+            isHovering = !!newHighlight;
+        }
+
+        function highlightSet(nodeSet) {
+            Object.values(nodes).forEach(n => {
+                const isHighlighted = nodeSet.has(n);
+                // 2D 포커싱 모드에서는 배경을 더 어둡게 처리
+                const backgroundOpacity = isFocused ? 0.02 : 0.05;
+                n.material.opacity = isHighlighted ? 1.0 : backgroundOpacity;
+                n.userData.label.element.style.opacity = isHighlighted ? 1.0 : backgroundOpacity;
+                
+                // 2D 포커싱 모드에서 배경 노드의 색상과 발광도 어둡게 처리
+                if (!isHighlighted && isFocused) {
+                    n.material.color.set(0x2d2d2d); // 배경 노드: 어두운 회색
+                    n.material.emissive.set(0x000000); // 발광 제거
+                }
+                
+                // 2D 포커싱 모드에서 키워드 속성에 따른 색상 차별화
+                if (isHighlighted && isFocused) {
+                    // 중심 키워드 (클릭한 키워드)는 밝은 오렌지
+                    if (n === highlightedNode) {
+                        n.material.color.set(0xff6b35); // 중심 키워드: 밝은 오렌지
+                        n.material.emissive.set(0xff6b35).multiplyScalar(0.4);
+                    } else {
+                        // 종속 키워드들은 파란색 계열
+                        n.material.color.set(0x3b82f6); // 종속 키워드: 파란색
+                        n.material.emissive.set(0x3b82f6).multiplyScalar(0.3);
+                    }
+                    
+                    const currentSize = parseInt(document.getElementById('text-size-slider').value);
+                    n.userData.label.element.style.fontSize = (currentSize + 2) + 'px';
+                    n.userData.label.visible = true; // 포커싱된 키워드는 항상 라벨 표시
+                } else if (isHighlighted) {
+                    // 일반 하이라이트 상태 (3D 모드)에서는 기존 색상 유지
+                    const state = Math.random() * 2 - 1; // 기존 상태값 사용
+                    const originalColor = getStateColor(state);
+                    n.material.color.copy(originalColor);
+                    n.material.emissive.copy(originalColor).multiplyScalar(0.3);
+                }
+            });
+
+            edges.forEach(edge => {
+                const [start, end] = edge.userData.nodes;
+                const isHighlighted = nodeSet.has(start) && nodeSet.has(end);
+                
+                if (isHighlighted) {
+                    // 2D 포커싱 모드에서 연결선 색상 다양화
+                    if (isFocused) {
+                        // 중심 키워드와 연결된 선은 오렌지계열
+                        if (start === highlightedNode || end === highlightedNode) {
+                            edge.material.color.set(0xff8c42); // 중심-종속 연결: 주황색
+                        } else {
+                            // 종속 키워드들 간 연결은 청록색
+                            edge.material.color.set(0x06b6d4); // 종속-종속 연결: 청록색
+                        }
+                        edge.material.opacity = 0.9; // 2D 모드에서 더 선명하게
+                    } else {
+                        // 3D 모드에서는 기존 노란색 유지
+                        edge.material.color.set(0xfbbf24);
+                        edge.material.opacity = 0.8;
+                    }
+                } else {
+                    edge.material.color.set(0x4b5563);
+                    edge.material.opacity = isFocused ? 0.01 : 0.02; // 2D 모드에서 배경 연결선 더 어둡게
+                }
+            });
+        }
+
+        function unhighlightAll() {
+             Object.values(nodes).forEach(n => {
+                n.material.opacity = 1;
+                n.userData.label.element.style.opacity = 1;
+                
+                // 원래 색상으로 복원 (상태 기반)
+                if (n.userData.originalState !== undefined) {
+                    const originalColor = getStateColor(n.userData.originalState);
+                    n.material.color.copy(originalColor);
+                    n.material.emissive.copy(originalColor).multiplyScalar(0.3);
+                }
+                
+                // 텍스트 크기를 기본값으로 복원 (텍스트 크기 슬라이더 값 사용)
+                const defaultSize = document.getElementById('text-size-slider').value;
+                n.userData.label.element.style.fontSize = defaultSize + 'px';
+
+                // 노드를 원래 위치로 되돌림
+                gsap.to(n.position, {
+                    duration: 1.0, // Animation duration
+                    x: n.userData.originalPosition.x,
+                    y: n.userData.originalPosition.y,
+                    z: n.userData.originalPosition.z,
+                    ease: "power2.out"
+                });
+            });
+            edges.forEach(edge => {
+                edge.material.color.set(0x4b5563);
+                edge.material.opacity = 0.15;
+            });
+        }
+
+        // 성능 최적화 변수들
+        let frameCount = 0;
+        const OPTIMIZATION_FRAME_SKIP = 3; // 3프레임마다 업데이트
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            frameCount++;
+            
+            // Centralized rotation control. Rotates only when not focused and not hovering.
+            controls.autoRotate = !isFocused && !isHovering;
+
+            // 성능 최적화: 애니메이션 업데이트 빈도 조절
+            if (frameCount % OPTIMIZATION_FRAME_SKIP === 0) {
+                const time = Date.now() * 0.002;
+                
+                // 개선된 적응형 LOD 시스템: 줌 레벨에 따라 중앙/외곽 우선 표시 전환
+                if (!isFocused) {
+                    const cameraPosition = camera.position;
+                    const cameraDistance = cameraPosition.length(); // 원점에서 카메라까지의 거리
+                    const sphereRadius = 80; // 지구본 반지름
+                    
+                    // 줌 레벨 판단: 지구본 반지름 대비 카메라 거리
+                    const zoomRatio = cameraDistance / sphereRadius;
+                    const isZoomedIn = zoomRatio < 2.0; // 2.0배 미만이면 줌인 상태 (더 넓은 범위)
+                    
+                    // 카메라 방향 벡터
+                    const cameraDirection = new THREE.Vector3();
+                    camera.getWorldDirection(cameraDirection);
+                    
+                    Object.values(nodes).forEach(node => {
+                        if (node.userData.isNode) {
+                            const distance = cameraPosition.distanceTo(node.position);
+                            const centerDistance = node.position.length(); // 원점에서 노드까지의 거리
+                            
+                            // 시야각 내 여부 판단 (카메라 방향과 노드 방향의 각도)
+                            const nodeDirection = node.position.clone().sub(cameraPosition).normalize();
+                            const viewAngle = Math.acos(cameraDirection.dot(nodeDirection));
+                            const isInViewAngle = viewAngle < Math.PI / 3; // 60도 시야각 내
+                            
+                            if (isZoomedIn) {
+                                // 줌인 상태: 중앙 키워드 우선 표시
+                                const isCentralNode = centerDistance < sphereRadius * 0.9; // 지구본 내부 90% 영역 (확대)
+                                
+                                if (isCentralNode) {
+                                    // 중앙 노드: 항상 완전히 보임 (시야각 무관)
+                                    node.userData.label.visible = true;
+                                    node.material.opacity = 1.0;
+                                    const scale = 1 + Math.sin(time + node.userData.waveOffset) * 0.05;
+                                    node.scale.set(scale, scale, scale);
+                                } else if (isInViewAngle && distance < 120) {
+                                    // 외곽이지만 시야각 내이고 가까운 노드: 흐릿하게 보임
+                                    node.userData.label.visible = distance < 100;
+                                    node.material.opacity = 0.4;
+                                    const scale = 1 + Math.sin(time + node.userData.waveOffset) * 0.02;
+                                    node.scale.set(scale, scale, scale);
+                                } else {
+                                    // 외곽 노드: 거의 안보임
+                                    node.userData.label.visible = false;
+                                    node.material.opacity = 0.1;
+                                    node.scale.set(0.7, 0.7, 0.7);
+                                }
+                            } else {
+                                // 줌아웃 상태: 외곽 키워드 우선 표시 (기존 방식)
+                                const isOuterNode = centerDistance > sphereRadius * 0.9; // 지구본 외부 90% 영역
+                                
+                                if (isOuterNode && isInViewAngle && distance < 150) {
+                                    // 외곽의 시야각 내 노드: 완전히 보임
+                                    node.userData.label.visible = true;
+                                    node.material.opacity = 1.0;
+                                    const scale = 1 + Math.sin(time + node.userData.waveOffset) * 0.05;
+                                    node.scale.set(scale, scale, scale);
+                                } else if (distance < 200) {
+                                    // 중간 거리: 흐릿하게 보임
+                                    node.userData.label.visible = distance < 120;
+                                    node.material.opacity = Math.max(0.3, 1 - (distance / 200));
+                                    const scale = 1 + Math.sin(time + node.userData.waveOffset) * 0.02;
+                                    node.scale.set(scale, scale, scale);
+                                } else {
+                                    // 멀리 있는 노드: 거의 안보임
+                                    node.userData.label.visible = false;
+                                    node.material.opacity = Math.max(0.1, 1 - (distance / 300));
+                                    node.scale.set(1, 1, 1);
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    // 포커싱 상태일 때는 모든 노드 완전 표시
+                    Object.values(nodes).forEach(node => {
+                        if (node.userData.isNode) {
+                            node.userData.label.visible = true;
+                            node.material.opacity = 1.0;
+                            const scale = 1 + Math.sin(time + node.userData.waveOffset) * 0.05;
+                            node.scale.set(scale, scale, scale);
+                        }
+                    });
+                }
+            }
+
+            // 하이라이트 체크는 매 프레임 (상호작용 반응성 유지)
+            checkHighlight();
+            controls.update();
+            
+            renderer.render(scene, camera);
+            labelRenderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
