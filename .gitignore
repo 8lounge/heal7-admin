@@ -14,9 +14,15 @@ dist/
 # Environment variables
 .env
 .env.local
+.env.development
+.env.production
 .env.development.local
 .env.test.local
 .env.production.local
+
+# AI API keys and sensitive data
+.env.ai
+.env.secrets
 
 # IDE
 .vscode/

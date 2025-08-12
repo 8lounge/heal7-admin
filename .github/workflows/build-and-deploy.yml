@@ -19,6 +19,13 @@ on:
 
 env:
   NODE_ENV: production
+  # 환경변수는 GitHub Secrets에서 자동 주입
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  JWT_SECRET: ${{ secrets.JWT_SECRET }}
+  ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
 
 jobs:
   build-frontend:
