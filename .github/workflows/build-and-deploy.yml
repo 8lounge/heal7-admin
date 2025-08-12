@@ -47,7 +47,7 @@ jobs:
     - name: 📦 Install dependencies
       run: |
         cd frontend
-        npm ci --prefer-offline --no-audit --legacy-peer-deps
+        npm ci --prefer-offline --no-audit --legacy-peer-deps --include=dev
         
     - name: 🔍 Type check
       run: |
